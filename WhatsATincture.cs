@@ -27,7 +27,7 @@ public class WhatsATincture : BaseSettingsPlugin<WhatsATinctureSettings>
 
     private DateTime _lastKeyPressAt;
 
-    // Cached from Tick() for Render() — avoids double monster scan
+    // Cached from Tick() for Render()  - avoids double monster scan
     private bool _cachedUniqueNearby;
     private bool _cachedEnemiesNearby;
 
@@ -233,7 +233,7 @@ public class WhatsATincture : BaseSettingsPlugin<WhatsATinctureSettings>
         {
             state.HasPendingToggle = false;
 
-            // Failed activation — tincture is likely on cooldown in-game.
+            // Failed activation  - tincture is likely on cooldown in-game.
             // Set a backoff based on the computed cooldown duration to stop key spam.
             if (state.PendingExpectedActive)
             {
@@ -340,7 +340,7 @@ public class WhatsATincture : BaseSettingsPlugin<WhatsATinctureSettings>
         int stacks = burnBuff?.BuffCharges ?? 0;
         bool burnExists = burnBuff != null;
 
-        // Resource check — life burn checks HP, mana burn checks mana
+        // Resource check  - life burn checks HP, mana burn checks mana
         var life = player.GetComponent<Life>();
         if (life == null) return;
         bool isMana = !_buildScan.HasBloodsoackedBlade;
@@ -348,7 +348,7 @@ public class WhatsATincture : BaseSettingsPlugin<WhatsATinctureSettings>
             ? life.MPPercentage * 100
             : life.HPPercentage * 100;
 
-        // Monster detection — cached for Render()
+        // Monster detection  - cached for Render()
         bool uniqueNearby = false;
         bool enemiesNearby = false;
         int range = Settings.Behavior.ActivationRange.Value;
@@ -436,7 +436,7 @@ public class WhatsATincture : BaseSettingsPlugin<WhatsATinctureSettings>
             }
         }
 
-        // Execute toggle — only if the game can receive input
+        // Execute toggle  - only if the game can receive input
         if (toggleSlot >= 0 && CanSendInput())
         {
             // Enforce minimum interval between key presses (ToggleCooldownMs)
@@ -598,7 +598,7 @@ public class WhatsATincture : BaseSettingsPlugin<WhatsATinctureSettings>
         }
         int stacks = burnBuff?.BuffCharges ?? 0;
 
-        // Use cached monster state from Tick() — no double scan
+        // Use cached monster state from Tick()  - no double scan
         bool uniqueNearby = _cachedUniqueNearby;
 
         float x = Settings.Hud.HudX.Value;
