@@ -194,13 +194,15 @@ public class WhatsATincture : BaseSettingsPlugin<WhatsATinctureSettings>
         return false;
     }
 
+    private const float FallbackCooldownSeconds = 5f;
+
     private float ComputeCooldownDuration(int slotIndex)
     {
-        if (!_slotItems.TryGetValue(slotIndex, out var slotItem)) return 0f;
-        if (slotItem?.Item == null) return 0f;
+        if (!_slotItems.TryGetValue(slotIndex, out var slotItem)) return FallbackCooldownSeconds;
+        if (slotItem?.Item == null) return FallbackCooldownSeconds;
 
         var tincture = slotItem.Item.GetComponent<Tincture>();
-        if (tincture?.TinctureDat == null) return 0f;
+        if (tincture?.TinctureDat == null) return FallbackCooldownSeconds;
 
         var player = GameController.Player;
         float playerCdr = player?.GetComponent<Stats>()?.StatDictionary
@@ -263,8 +265,10 @@ public class WhatsATincture : BaseSettingsPlugin<WhatsATinctureSettings>
 
                 // If the game deactivated the tincture on its own (no pending deactivation
                 // from us), apply extra backoff. This happens when mana/life runs out.
+                // Even plugin-initiated deactivation still triggers a game cooldown, so
+                // always enforce a minimum to prevent immediate re-activation spam.
                 bool gameForced = !state.HasPendingToggle || state.PendingExpectedActive;
-                float backoff = gameForced ? Math.Max(cd, 3.0f) : cd;
+                float backoff = Math.Max(cd, gameForced ? 3.0f : 2.0f);
 
                 var readyTime = DateTime.UtcNow.AddSeconds(backoff);
                 foreach (var rt in _runtime.Values)
