@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using ExileCore.Shared.Attributes;
 using ExileCore.Shared.Interfaces;
 using ExileCore.Shared.Nodes;
 
@@ -8,13 +9,14 @@ public class WhatsATinctureSettings : ISettings
 {
     public ToggleNode Enable { get; set; } = new ToggleNode(true);
     public TextNode BurnBuffName { get; set; } = new TextNode("tincture_life_burn");
-    public Dictionary<int, TinctureSlotConfig> Tinctures { get; set; } = new();
+    [IgnoreMenu] public Dictionary<int, TinctureSlotConfig> Tinctures { get; set; } = new();
     public GlobalThresholds Thresholds { get; set; } = new();
     public BehaviorSettings Behavior { get; set; } = new();
     public HudSettings Hud { get; set; } = new();
-    public int SettingsVersion { get; set; }
+    [IgnoreMenu] public int SettingsVersion { get; set; }
 }
 
+[Submenu]
 public class GlobalThresholds
 {
     public RangeNode<int> StacksNormal { get; set; } = new RangeNode<int>(12, 1, 100);
@@ -23,12 +25,14 @@ public class GlobalThresholds
     public RangeNode<int> HpMinUnique { get; set; } = new RangeNode<int>(60, 0, 100);
 }
 
+[Submenu]
 public class BehaviorSettings
 {
     public RangeNode<int> ActivationRange { get; set; } = new RangeNode<int>(80, 10, 200);
     public RangeNode<int> ToggleCooldownMs { get; set; } = new RangeNode<int>(400, 100, 1000);
 }
 
+[Submenu]
 public class HudSettings
 {
     public ToggleNode ShowHud { get; set; } = new ToggleNode(true);
