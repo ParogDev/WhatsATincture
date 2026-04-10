@@ -42,6 +42,7 @@ public class WhatsATincture : BaseSettingsPlugin<WhatsATinctureSettings>
 
     public override bool Initialise()
     {
+        Name = "Whats A Tincture";
         Settings.Thresholds ??= new GlobalThresholds();
         Settings.Behavior ??= new BehaviorSettings();
         Settings.Hud ??= new HudSettings();
