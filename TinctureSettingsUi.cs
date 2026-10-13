@@ -25,7 +25,7 @@ public class TinctureSettingsUi
 
     public TinctureSettingsUi()
     {
-        _menu = new SettingsMenu { Accent = Accent, RootTabName = "Tinctures" }
+        _menu = new SettingsMenu(m => HudLog.Fault(m)) { Accent = Accent, RootTabName = "Tinctures" }
             .Tab("Tinctures", DrawStatusStrip, first: true)
             .Custom("Tinctures", DrawTinctureCards)
             .Tab("Guide", DrawGuide);
