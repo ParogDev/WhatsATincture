@@ -6,7 +6,7 @@ WhatsATincture is an ExileApi plugin that automates tincture management for any 
 
 **Main class**: `WhatsATincture` inherits `BaseSettingsPlugin<WhatsATinctureSettings>`
 **Settings class**: `WhatsATinctureSettings` implements `ISettings`
-**Key classes**: `FlaskSlotInfo` (record — flask belt scan data), `TinctureSlotConfig` (per-slot settings POCO), `TinctureRuntimeState` (per-frame state tracking), `BuildScanResult` (passive tree analysis with scenario classification), `TinctureSettingsUi` (custom ImGui settings panel with per-tincture config cards and scenario-adaptive guide)
+**Key classes**: `FlaskSlotInfo` (record — flask belt scan data), `TinctureSlotConfig` (per-slot settings POCO), `TinctureRuntimeState` (per-frame state tracking), `BuildScanResult` (passive tree analysis with scenario classification), `SettingsMenu` (the [Menu]-driven settings renderer, a per-plugin copy of the scaffolding's `new-plugin/templates/SettingsMenu.template.cs` with `__HUD__` = ExileCore), `TinctureSettingsUi` (the custom parts the renderer can't know: status strip + Rescan, per-tincture config cards, scenario-adaptive guide)
 
 ### Architecture
 
@@ -22,7 +22,7 @@ WhatsATincture is an ExileApi plugin that automates tincture management for any 
 
 3. **Render()** — Draws N horizontal status bars (one per configured tincture, sorted by slot index). Each bar shows active state with stack fill (using per-slot effective threshold), cooldown countdown, or "Ready" state. Display names are truncated to fit.
 
-4. **DrawSettings()** — Custom ImGui panel with 5 tabs: Tinctures (status bar + per-tincture config cards with threshold overrides, priority sliders, HighStacks toggle + rescan), Thresholds (global stack/HP limits), Behavior (range/cooldown), HUD (position/size), Guide (scenario-adaptive strategy explanation + passive tree checklist).
+4. **DrawSettings()** — `TinctureSettingsUi.Draw` runs `SettingsMenu.Draw(Settings)`: 5 tabs. Tinctures (root tab: status strip + Rescan via `Tab(..., first: true)`, the read-only Burn Buff row from `[MenuReadOnly]`, one card per detected tincture via `Custom("Tinctures", ...)` with threshold overrides, priority sliders and the HighStacks toggle), Thresholds / Behavior / HUD (generated from the `[Submenu]` classes, labels and tooltips from `[Menu]`, units from `[MenuUnit]`), Guide (`Tab("Guide", ...)`: scenario-adaptive strategy explanation + passive tree checklist).
 
 ### Lifecycle Methods Used
 
