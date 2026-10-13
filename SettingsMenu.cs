@@ -58,7 +58,10 @@ internal sealed class MenuTabAttribute : Attribute
 /// is not drawn again. Right-click a label: reset to the value a fresh settings object has.</para>
 /// <para>Node types drawn: ToggleNode (with its attached hotkey), RangeNode of int/float/long/double/Vector2, ColorNode,
 /// TextNode, ListNode, HotkeyNodeV2, HotkeyNode, ButtonNode, EmptyNode, CustomNode. Anything else is named in the
-/// footer ("not drawn: Name (Type)") rather than silently skipped. The footer also shows the draw cost.</para>
+/// footer (hover it) rather than silently skipped, as is any row without a default. The footer also shows the draw
+/// cost.</para>
+/// <para>The filter box searches row labels, tooltips and paths (a Custom row by its own label). It can't see inside
+/// drawing it doesn't own: Tab bodies, Banner and [Submenu(RenderMethod)] content are not searched.</para>
 /// <para>Techniques after syrairc's ExileMaps ExileImGui2 kit (card surfaces raised off the window colour, trailing
 /// groups, search combos), ported rather than linked.</para>
 /// </summary>
@@ -167,11 +170,16 @@ internal sealed class SettingsMenu
         public readonly List<Row> Children = new();
         public bool Attached;      // placed under a parent row via parentIndex
         public Row? ParentRow;     // the row it hangs under: search honours that row's [ConditionalDisplay] too
+        public int Depth;          // rows above it (set by FreezeAll): its label is indented 14 px per level
+        public string ButtonId = "";   // ButtonNode: Label + "##b", built once
+        // hotkey button labels, rebuilt only when the key changes (slot 0: the row's own, slot 1: a toggle's hotkey)
+        public readonly int[] HkHash = { int.MinValue, int.MinValue };
+        public readonly string[] HkLabel = { "", "" };
     }
 
     private sealed class Section
     {
-        public string Path = "", Title = "";
+        public string Path = "", Title = "", HeaderId = "";   // HeaderId: Title + "###h", built once
         public string? Tip;
         public bool Collapsed, Headerless;
         public Func<object, object?> Get = o => o;
@@ -188,6 +196,13 @@ internal sealed class SettingsMenu
         {
             VisibleRows = Rows.Where(r => !r.Hidden).ToList();
             FlatRows = VisibleRows.SelectMany(Flatten).Where(r => !r.Hidden).ToList();
+            HeaderId = Title + "###h";
+            foreach (var r in FlatRows)
+            {
+                r.Depth = 0;
+                for (var up = r.ParentRow; up != null; up = up.ParentRow) r.Depth++;
+                r.ButtonId = r.Label + "##b";
+            }
         }
     }
 
@@ -196,6 +211,15 @@ internal sealed class SettingsMenu
         public string Name = "";
         public readonly List<Section> Sections = new();
         public readonly List<Action> Before = new(), After = new();
+        private float _fitW = -1f;
+        private string _fit = "";
+
+        /// <summary>The name shortened to fit, recomputed only when the width changes.</summary>
+        public string Fitted(float maxW)
+        {
+            if (maxW != _fitW) { _fitW = maxW; _fit = Fit(Name, maxW); }
+            return _fit;
+        }
     }
 
     private sealed class Model
@@ -224,9 +248,17 @@ internal sealed class SettingsMenu
         if (settings == null) { Text(Bad, "[SettingsMenu] Draw(null): the plugin passed no settings object"); return; }
         if (_model == null || !ReferenceEquals(_modelFor, settings))
         {
-            _model = Build(settings);
+            try { _model = Build(settings); }
+            catch (Exception ex)
+            {
+                // cached like a good model, so a broken settings class costs one reflection pass, not one per frame;
+                // the per-property catches name the path, this one only catches what escaped them
+                _model = new Model();
+                _model.Problems.Add($"building the panel for {settings.GetType().Name} failed: {ex.GetType().Name}: {ex.Message}");
+            }
             _modelFor = settings;
             _footerAt = double.NaN;   // the footer names this model's counts, not the last one's
+            _activeTab = Math.Clamp(_activeTab, 0, Math.Max(0, _model.Tabs.Count - 1));   // fewer tabs after a rebuild
         }
         var m = _model;
         ImGui.PushID("settings-menu");
@@ -239,7 +271,8 @@ internal sealed class SettingsMenu
             try
             {
                 if (_filter.Length > 0) DrawSearch(m, settings);
-                else if (m.Tabs.Count > 0) DrawTab(m.Tabs[Math.Clamp(_activeTab, 0, m.Tabs.Count - 1)], settings);
+                else if (m.Tabs.Count > 0) DrawTab(m.Tabs[_activeTab], settings);
+                else if (m.Problems.Count > 0) foreach (var p in m.Problems) Text(Bad, p);
                 else Dim("No settings to draw: no [Submenu] properties and no supported nodes on " + settings.GetType().Name);
             }
             finally { ImGui.EndChild(); }
@@ -269,14 +302,16 @@ internal sealed class SettingsMenu
                 var tMin = new Vector2(origin.X + i * tabW, origin.Y);
                 var tMax = new Vector2(origin.X + (i + 1) * tabW, origin.Y + tabH);
                 ImGui.SetCursorScreenPos(tMin);
-                ImGui.InvisibleButton("##tab" + i, tMax - tMin);
+                ImGui.PushID(i);
+                ImGui.InvisibleButton("##tab", tMax - tMin);
+                ImGui.PopID();
                 bool hov = ImGui.IsItemHovered();
                 if (ImGui.IsItemClicked()) { _activeTab = i; _filter = ""; }
                 bool active = i == _activeTab && _filter.Length == 0;
                 if (active) dl.AddRectFilled(tMin, tMax, U32(Accent, 0.10f), 3f);
                 else if (hov) dl.AddRectFilled(tMin, tMax, U32(Accent, 0.05f), 3f);
                 if (active) dl.AddLine(new Vector2(tMin.X + 3, tMax.Y - 1), new Vector2(tMax.X - 3, tMax.Y - 1), U32(Accent), 2f);
-                var text = Fit(m.Tabs[i].Name, tabW - 10f);
+                var text = m.Tabs[i].Fitted(tabW - 10f);
                 var sz = ImGui.CalcTextSize(text);
                 dl.AddText((tMin + tMax) * 0.5f - sz * 0.5f, active ? U32(Accent) : hov ? U32(Accent, 0.8f) : Muted, text);
                 if (hov && text != m.Tabs[i].Name) Tooltip(m.Tabs[i].Name);
@@ -330,7 +365,7 @@ internal sealed class SettingsMenu
             ImGui.Spacing();
             Text(Accent, here);
             ImGui.Separator();
-            float labelW = LabelWidth(_searchHits);
+            float labelW = LabelWidth(_searchHits, indented: false);
             ImGui.PushID(s.Path);
             try
             {
@@ -391,7 +426,7 @@ internal sealed class SettingsMenu
                 ImGui.PushStyleColor(ImGuiCol.HeaderActive, U32(Accent, 0.24f));
                 ImGui.PushStyleColor(ImGuiCol.Text, Accent);
                 ImGui.SetNextItemOpen(open);
-                open = ImGui.TreeNodeEx(s.Title + "###h", ImGuiTreeNodeFlags.Framed | ImGuiTreeNodeFlags.SpanFullWidth | ImGuiTreeNodeFlags.NoTreePushOnOpen | ImGuiTreeNodeFlags.AllowOverlap);
+                open = ImGui.TreeNodeEx(s.HeaderId,ImGuiTreeNodeFlags.Framed | ImGuiTreeNodeFlags.SpanFullWidth | ImGuiTreeNodeFlags.NoTreePushOnOpen | ImGuiTreeNodeFlags.AllowOverlap);
                 ImGui.PopStyleColor(4);
                 _open[s.Path] = open;
                 if (!string.IsNullOrEmpty(s.Tip) && ImGui.IsItemHovered()) Tooltip(s.Tip);
@@ -410,8 +445,8 @@ internal sealed class SettingsMenu
             }
             if (open)
             {
-                if (s.RenderMethod != null) Guarded(() => s.RenderMethod(owner), s.Path);
-                float labelW = LabelWidth(s.FlatRows);
+                if (s.RenderMethod != null) Guarded(s.RenderMethod, owner, s.Path);
+                float labelW = LabelWidth(s.FlatRows, indented: true);
                 foreach (var r in s.VisibleRows) DrawRow(r, owner, labelW, 0);
                 foreach (var c in s.Children) { ImGui.Spacing(); DrawSection(c, owner, depth + 1); }
             }
@@ -426,12 +461,14 @@ internal sealed class SettingsMenu
         ImGui.Spacing();
     }
 
-    private static float LabelWidth(List<Row> rows)
+    /// <summary>X of the control column, measured from the window's left edge like ImGui.SameLine(x), which ignores
+    /// Indent: so an indented row's label width includes its indent and every row's control lines up.</summary>
+    private static float LabelWidth(List<Row> rows, bool indented)
     {
         float w = 0f;
         foreach (var r in rows)
             if (r.Kind != Kind.Empty && r.Kind != Kind.Custom && r.Kind != Kind.CustomNode)
-                w = Math.Max(w, ImGui.CalcTextSize(r.Label).X);
+                w = Math.Max(w, ImGui.CalcTextSize(r.Label).X + (indented ? r.Depth * 14f : 0f));
         float avail = ImGui.GetContentRegionAvail().X;
         return Math.Clamp(w + 26f, 120f, Math.Max(120f, avail * 0.46f));
     }
@@ -452,7 +489,7 @@ internal sealed class SettingsMenu
                     Guarded(r.Custom!, r.Path);
                     break;
                 default:
-                    DrawValueRow(r, owner, labelW - (depth > 0 ? 14f : 0f));
+                    DrawValueRow(r, owner, labelW);   // SameLine(x) ignores Indent: the column is the same at any depth
                     break;
             }
             if (recurse) foreach (var c in r.Children) DrawRow(c, owner, labelW, depth + 1);
@@ -494,7 +531,8 @@ internal sealed class SettingsMenu
         }
         var style = ImGui.GetStyle();
         // label column
-        bool changedFromDefault = node != null && ChangedFromDefault(r, node);
+        // a read-only value is the plugin's to set (an auto-detected buff name): "changed from default" means nothing
+        bool changedFromDefault = !r.ReadOnly && node != null && ChangedFromDefault(r, node);
         ImGui.AlignTextToFramePadding();
         Text(r.ReadOnly ? style.Colors[(int)ImGuiCol.TextDisabled] : style.Colors[(int)ImGuiCol.Text], r.Label);
         bool labelHovered = ImGui.IsItemHovered();
@@ -508,7 +546,7 @@ internal sealed class SettingsMenu
             ImGui.BeginTooltip();
             ImGui.PushTextWrapPos(360f);
             if (!string.IsNullOrEmpty(r.Tip)) ImGui.TextUnformatted(r.Tip);
-            if (changedFromDefault) Dim(r.ReadOnly ? "default: " + r.DefaultText : "default: " + r.DefaultText + "  (right-click to reset)");
+            if (changedFromDefault) Dim("default: " + r.DefaultText + "  (right-click to reset)");
             ImGui.PopTextWrapPos();
             ImGui.EndTooltip();
         }
@@ -549,14 +587,16 @@ internal sealed class SettingsMenu
                 if (ImGui.BeginPopupContextItem("##hkctx"))
                 {
                     Dim("Hotkey that flips this toggle");
-                    n.AttachedHotkey.DrawPickerButton($"{n.AttachedHotkey.Value}##hk");
+                    n.AttachedHotkey.DrawPickerButton($"{n.AttachedHotkey.Value}##hk");   // only while the popup is open
                     ImGui.EndPopup();
                 }
                 else if (ImGui.IsItemHovered()) Tooltip(v ? "On (right-click: hotkey)" : "Off (right-click: hotkey)");
                 if (n.AttachedHotkey.Value.Mode != HotkeyNodeV2.HotkeyNodeMode.None)
                 {
                     ImGui.SameLine();
-                    SmallAccentButton(() => n.AttachedHotkey.DrawPickerButton($"[{n.AttachedHotkey.Value}]##hk2"));
+                    PushAccentButton();
+                    try { n.AttachedHotkey.DrawPickerButton(HotkeyLabel(r, 1, n.AttachedHotkey.Value, n.AttachedHotkey.Value.GetHashCode(), "##hk2")); }
+                    finally { ImGui.PopStyleColor(4); }
                     if (ImGui.IsItemHovered()) Tooltip("Hotkey that flips this toggle (click to change)");
                 }
                 break;
@@ -581,16 +621,24 @@ internal sealed class SettingsMenu
             {
                 var n = (RangeNode<long>)node;
                 if (r.ReadOnly) { ValueText(n.Value + Suffix(r)); ReadOnlyBadge(r); break; }
-                int v = (int)Math.Clamp(n.Value, int.MinValue, int.MaxValue);
-                if (Slider("##v", ref v, (int)Math.Max(n.Min, int.MinValue), (int)Math.Min(n.Max, int.MaxValue), r.Unit)) n.Value = v;
+                // 64-bit slider: no round trip through int, no clamp at int.MaxValue
+                _s64[0] = n.Value; _s64[1] = n.Min; _s64[2] = n.Max;
+                PushSliderStyle();
+                bool c = ImGui.SliderScalar("##v", ImGuiDataType.S64, Slot(_s64H, 0), Slot(_s64H, 1), Slot(_s64H, 2), Format("%lld", r.Unit), ImGuiSliderFlags.AlwaysClamp);
+                PopSliderStyle();
+                if (c) n.Value = _s64[0];
                 break;
             }
             case Kind.RangeDouble:
             {
                 var n = (RangeNode<double>)node;
                 if (r.ReadOnly) { ValueText(n.Value.ToString("0.###") + Suffix(r)); ReadOnlyBadge(r); break; }
-                float v = (float)n.Value;
-                if (Slider("##v", ref v, (float)n.Min, (float)n.Max, r.Unit)) n.Value = v;
+                // double slider: the value is never squeezed through float
+                _f64[0] = n.Value; _f64[1] = n.Min; _f64[2] = n.Max;
+                PushSliderStyle();
+                bool c = ImGui.SliderScalar("##v", ImGuiDataType.Double, Slot(_f64H, 0), Slot(_f64H, 1), Slot(_f64H, 2), Format("%.3f", r.Unit), ImGuiSliderFlags.AlwaysClamp);
+                PopSliderStyle();
+                if (c) n.Value = _f64[0];
                 break;
             }
             case Kind.RangeVec2:
@@ -599,7 +647,7 @@ internal sealed class SettingsMenu
                 if (r.ReadOnly) { ValueText($"{n.Value.X:0.##}, {n.Value.Y:0.##}" + Suffix(r)); ReadOnlyBadge(r); break; }
                 var v = n.Value;
                 PushSliderStyle();
-                if (ImGui.SliderFloat2("##v", ref v, Math.Min(n.Min.X, n.Min.Y), Math.Max(n.Max.X, n.Max.Y), "%.1f" + Unit(r), ImGuiSliderFlags.AlwaysClamp)) n.Value = v;
+                if (ImGui.SliderFloat2("##v", ref v, Math.Min(n.Min.X, n.Min.Y), Math.Max(n.Max.X, n.Max.Y), Format("%.1f", r.Unit), ImGuiSliderFlags.AlwaysClamp)) n.Value = v;
                 PopSliderStyle();
                 break;
             }
@@ -636,8 +684,11 @@ internal sealed class SettingsMenu
             case Kind.HotkeyV2:
             {
                 var n = (HotkeyNodeV2)node;
-                if (r.ReadOnly) { ValueText(n.Value.ToString()); ReadOnlyBadge(r); break; }
-                SmallAccentButton(() => n.DrawPickerButton($"[{n.Value}]##hk"));
+                var label = HotkeyLabel(r, 0, n.Value, n.Value?.GetHashCode() ?? 0, r.ReadOnly ? "" : "##hk");
+                if (r.ReadOnly) { ValueText(label); ReadOnlyBadge(r); break; }
+                PushAccentButton();
+                try { n.DrawPickerButton(label); }
+                finally { ImGui.PopStyleColor(4); }
                 ImGui.SameLine();
                 Dim("click, then press the new key");
                 break;
@@ -646,8 +697,11 @@ internal sealed class SettingsMenu
             {
 #pragma warning disable CS0618
                 var n = (HotkeyNode)node;
-                if (r.ReadOnly) { ValueText(n.Value.ToString()); ReadOnlyBadge(r); break; }
-                SmallAccentButton(() => n.DrawPickerButton($"[{n.Value}]##hk"));
+                var label = HotkeyLabel(r, 0, n.Value, n.Value.GetHashCode(), r.ReadOnly ? "" : "##hk");
+                if (r.ReadOnly) { ValueText(label); ReadOnlyBadge(r); break; }
+                PushAccentButton();
+                try { n.DrawPickerButton(label); }
+                finally { ImGui.PopStyleColor(4); }
 #pragma warning restore CS0618
                 ImGui.SameLine();
                 Dim("click, then press the new key");
@@ -656,7 +710,7 @@ internal sealed class SettingsMenu
             case Kind.Button:
             {
                 var n = (ButtonNode)node;
-                if (AccentButton(r.Label + "##b")) Guarded(() => n.OnPressed(), r.Path);
+                if (AccentButton(r.ButtonId)) Guarded(() => n.OnPressed(), r.Path);   // the closure only on a click
                 break;
             }
             case Kind.CustomNode:
@@ -715,7 +769,7 @@ internal sealed class SettingsMenu
             _footerAt = now;
             var text = $"{m.RowCount} settings  -  drawn in {LastDrawMs:0.00} ms";
             if (m.DefaultsUnavailable != null) text += "  -  reset unavailable: " + m.DefaultsUnavailable;
-            if (m.Problems.Count > 0) text += $"  -  {m.Problems.Count} not drawn";
+            if (m.Problems.Count > 0) text += $"  -  {m.Problems.Count} problem" + (m.Problems.Count == 1 ? "" : "s") + " (hover)";
             _footer = text;
         }
         Dim(_footer);
@@ -796,7 +850,7 @@ internal sealed class SettingsMenu
     {
         PushSliderStyle();
         // AlwaysClamp: a Ctrl+click typed value stays inside [min, max] like a dragged one
-        bool c = ImGui.SliderInt(id, ref value, min, max, "%d" + UnitFmt(unit), ImGuiSliderFlags.AlwaysClamp);
+        bool c = ImGui.SliderInt(id, ref value, min, max, Format("%d", unit), ImGuiSliderFlags.AlwaysClamp);
         PopSliderStyle();
         return c;
     }
@@ -805,7 +859,7 @@ internal sealed class SettingsMenu
     public bool Slider(string id, ref float value, float min, float max, string? unit = null)
     {
         PushSliderStyle();
-        bool c = ImGui.SliderFloat(id, ref value, min, max, "%.2f" + UnitFmt(unit), ImGuiSliderFlags.AlwaysClamp);
+        bool c = ImGui.SliderFloat(id, ref value, min, max, Format("%.2f", unit), ImGuiSliderFlags.AlwaysClamp);
         PopSliderStyle();
         return c;
     }
@@ -854,14 +908,46 @@ internal sealed class SettingsMenu
         Text(Accent, text);
     }
 
-    private void SmallAccentButton(Action drawButton)
+    /// <summary>Accent button colours for a button drawn elsewhere (a hotkey picker): pop with PopStyleColor(4).</summary>
+    private void PushAccentButton()
     {
         ImGui.PushStyleColor(ImGuiCol.Button, U32(Accent, 0.12f));
         ImGui.PushStyleColor(ImGuiCol.ButtonHovered, U32(Accent, 0.25f));
         ImGui.PushStyleColor(ImGuiCol.ButtonActive, U32(Accent, 0.4f));
         ImGui.PushStyleColor(ImGuiCol.Text, Accent);
-        try { drawButton(); }
-        finally { ImGui.PopStyleColor(4); }
+    }
+
+    /// <summary>"[key]" + suffix, rebuilt only when the key's hash changes, so an idle panel builds no strings.
+    /// Generic so an enum key (the legacy HotkeyNode's Keys) is not boxed.</summary>
+    private static string HotkeyLabel<T>(Row r, int slot, T value, int hash, string suffix)
+    {
+        if (r.HkHash[slot] != hash || r.HkLabel[slot].Length == 0)
+        {
+            r.HkHash[slot] = hash;
+            r.HkLabel[slot] = "[" + value?.ToString() + "]" + suffix;
+        }
+        return r.HkLabel[slot];
+    }
+
+    // SliderScalar reads min/max/value through pointers: arrays on the pinned object heap never move, so their
+    // element addresses are taken once and nothing is pinned or allocated per frame
+    private static readonly long[] _s64 = GC.AllocateArray<long>(3, pinned: true);
+    private static readonly double[] _f64 = GC.AllocateArray<double>(3, pinned: true);
+    private static readonly IntPtr[] _s64H = { Addr(_s64, 0), Addr(_s64, 1), Addr(_s64, 2) };
+    private static readonly IntPtr[] _f64H = { Addr(_f64, 0), Addr(_f64, 1), Addr(_f64, 2) };
+    private static IntPtr Addr<T>(T[] a, int i) => System.Runtime.InteropServices.Marshal.UnsafeAddrOfPinnedArrayElement(a, i);
+    private static IntPtr Slot(IntPtr[] h, int i) => h[i];
+
+    // printf formats per (base, unit), built once: ImGui needs a % in a unit doubled
+    private static readonly Dictionary<(string, string), string> Formats = new();
+    private static string Format(string baseFmt, string? unit)
+    {
+        if (string.IsNullOrEmpty(unit)) return baseFmt;
+        lock (Formats)
+        {
+            if (!Formats.TryGetValue((baseFmt, unit), out var f)) Formats[(baseFmt, unit)] = f = baseFmt + " " + unit.Replace("%", "%%");
+            return f;
+        }
     }
 
     private void PushSliderStyle()
@@ -883,8 +969,6 @@ internal sealed class SettingsMenu
         ImGui.PopStyleColor(5);
     }
 
-    private static string UnitFmt(string? unit) => string.IsNullOrEmpty(unit) ? "" : " " + unit.Replace("%", "%%");
-    private static string Unit(Row r) => UnitFmt(r.Unit);
     private static string Suffix(Row r) => string.IsNullOrEmpty(r.Unit) ? "" : " " + r.Unit;
 
     private uint U32(Vector4 c, float alpha = 1f) => ImGui.GetColorU32(new Vector4(c.X, c.Y, c.Z, c.W * alpha));
@@ -925,6 +1009,16 @@ internal sealed class SettingsMenu
         }
     }
 
+    /// <summary>Same, for a callback that takes its owner: no closure per frame.</summary>
+    private static void Guarded(Action<object> a, object arg, string where)
+    {
+        try { a(arg); }
+        catch (Exception ex)
+        {
+            Text(Bad, $"{where}: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
     // ---- model building (reflection once per settings object, compiled getters afterwards) ----
 
     private Model Build(ISettings settings)
@@ -939,9 +1033,12 @@ internal sealed class SettingsMenu
         }
 
         var rootSection = new Section { Path = "", Title = RootTabName, Headerless = true };
+        var onPath = new HashSet<Type> { rootType };   // settings types being built: a type that contains itself stops here
         foreach (var p in rootType.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+        try
         {
             if (p.GetIndexParameters().Length > 0) continue;
+            if (Unreadable(m, p, p.Name)) continue;
             var menu = p.GetCustomAttribute<MenuAttribute>();
             var submenu = p.GetCustomAttribute<SubmenuAttribute>() ?? p.PropertyType.GetCustomAttribute<SubmenuAttribute>();
             bool isSub = submenu != null || typeof(ISettings).IsAssignableFrom(p.PropertyType);
@@ -949,7 +1046,8 @@ internal sealed class SettingsMenu
             {
                 if (p.GetCustomAttribute<IgnoreMenuAttribute>() != null) continue;
                 var tabName = p.GetCustomAttribute<MenuTabAttribute>()?.Tab ?? menu?.MenuName ?? DefaultName(p.Name);
-                var section = BuildSection(m, p, p.Name, menu, submenu);
+                var section = BuildSection(m, p, p.Name, menu, submenu, onPath);
+                if (section == null) continue;
                 if (string.Equals(tabName, RootTabName, StringComparison.OrdinalIgnoreCase) && !m.Tabs.Any(t => t.Sections.Contains(rootSection)))
                 {
                     // the root's own rows first, then this submenu's card, on the root tab
@@ -964,6 +1062,7 @@ internal sealed class SettingsMenu
             var row = BuildRow(m, p, p.Name, p.Name);
             if (row != null) rootSection.Rows.Add(row);
         }
+        catch (Exception ex) { m.Problems.Add($"{p.Name}: not drawn, building it threw {ex.GetType().Name}: {ex.Message}"); }
         AttachByIndex(m, rootSection);
         if (rootSection.Rows.Count > 0 && !m.Tabs.Any(t => t.Sections.Contains(rootSection)))
         {
@@ -990,7 +1089,26 @@ internal sealed class SettingsMenu
 
     private static int CountRows(Section s) => s.Rows.Sum(r => Flatten(r).Count(x => !x.Hidden && x.Kind != Kind.Empty)) + s.Children.Sum(CountRows);
 
-    private Section BuildSection(Model m, PropertyInfo p, string path, MenuAttribute? menu, SubmenuAttribute? submenu)
+    /// <summary>A property without a public getter can't be drawn: named in the footer, never thrown.</summary>
+    private static bool Unreadable(Model m, PropertyInfo p, string path)
+    {
+        if (p.GetMethod is { IsPublic: true }) return false;
+        m.Problems.Add($"{path}: has no public getter, so it can't be drawn (add [IgnoreMenu] or a getter)");
+        return true;
+    }
+
+    private Section? BuildSection(Model m, PropertyInfo p, string path, MenuAttribute? menu, SubmenuAttribute? submenu, HashSet<Type> onPath)
+    {
+        if (!onPath.Add(p.PropertyType))
+        {
+            m.Problems.Add($"{path}: {TypeName(p.PropertyType)} contains itself through its submenus, so it is drawn once, not again here (add [IgnoreMenu])");
+            return null;
+        }
+        try { return BuildSectionBody(m, p, path, menu, submenu, onPath); }
+        finally { onPath.Remove(p.PropertyType); }
+    }
+
+    private Section BuildSectionBody(Model m, PropertyInfo p, string path, MenuAttribute? menu, SubmenuAttribute? submenu, HashSet<Type> onPath)
     {
         var s = new Section
         {
@@ -1012,20 +1130,23 @@ internal sealed class SettingsMenu
             }
         }
         foreach (var c in p.PropertyType.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+        try
         {
             if (c.GetIndexParameters().Length > 0) continue;
             var cPath = path + "." + c.Name;
+            if (Unreadable(m, c, cPath)) continue;
             var cMenu = c.GetCustomAttribute<MenuAttribute>();
             var cSub = c.GetCustomAttribute<SubmenuAttribute>() ?? c.PropertyType.GetCustomAttribute<SubmenuAttribute>();
             if ((cSub != null || typeof(ISettings).IsAssignableFrom(c.PropertyType)) && !_custom.ContainsKey(cPath))
             {
                 if (c.GetCustomAttribute<IgnoreMenuAttribute>() != null) continue;
-                s.Children.Add(BuildSection(m, c, cPath, cMenu, cSub));
+                if (BuildSection(m, c, cPath, cMenu, cSub, onPath) is { } child) s.Children.Add(child);
                 continue;
             }
             var row = BuildRow(m, c, cPath, c.Name);
             if (row != null) s.Rows.Add(row);
         }
+        catch (Exception ex) { m.Problems.Add($"{path}.{c.Name}: not drawn, building it threw {ex.GetType().Name}: {ex.Message}"); }
         AttachByIndex(m, s);
         return s;
     }
@@ -1050,6 +1171,7 @@ internal sealed class SettingsMenu
         {
             row.Kind = Kind.Custom;
             row.Custom = custom;
+            row.Visible = Condition(m, p, path);   // [ConditionalDisplay] hides a custom row like any other
             return row;
         }
         if (p.GetCustomAttribute<IgnoreMenuAttribute>() != null) return null;
@@ -1207,20 +1329,36 @@ internal sealed class SettingsMenu
             m.DefaultsUnavailable = $"new {settings.GetType().Name}() failed ({(ex is TargetInvocationException { InnerException: { } ie } ? ie : ex).Message})";
             return;
         }
-        foreach (var t in m.Tabs) foreach (var s in t.Sections) SnapshotDefaults(s, fresh);
+        foreach (var t in m.Tabs) foreach (var s in t.Sections) SnapshotDefaults(m, s, fresh);
     }
 
-    private static void SnapshotDefaults(Section s, object parentFresh)
+    /// <summary>Reads each row's value on the fresh object. A row it can't read has no reset and no changed-dot,
+    /// and the footer says which and why.</summary>
+    private static void SnapshotDefaults(Model m, Section s, object parentFresh)
     {
         object? fresh;
-        try { fresh = s.Get(parentFresh); } catch { fresh = null; }
-        if (fresh == null) return;
+        try { fresh = s.Get(parentFresh); }
+        catch (Exception ex)
+        {
+            m.Problems.Add($"{(s.Path == "" ? "root" : s.Path)}: no defaults (reading it on a fresh settings object threw {ex.GetType().Name}: {ex.Message})");
+            return;
+        }
+        if (fresh == null)
+        {
+            m.Problems.Add($"{s.Path}: no defaults (it is null on a fresh settings object; create it in the property initialiser)");
+            return;
+        }
         foreach (var r in s.Rows.SelectMany(Flatten))
         {
             if (r.Kind is Kind.Empty or Kind.Custom or Kind.CustomNode or Kind.Button or Kind.Unsupported) continue;
             object? node;
-            try { node = r.Get(fresh); } catch { continue; }
-            if (node == null) continue;
+            try { node = r.Get(fresh); }
+            catch (Exception ex)
+            {
+                m.Problems.Add($"{r.Path}: no default (reading it on a fresh settings object threw {ex.GetType().Name}: {ex.Message})");
+                continue;
+            }
+            if (node == null) { m.Problems.Add($"{r.Path}: no default (null on a fresh settings object)"); continue; }
             var v = ValueOf(node);
             if (v == null) continue;
             r.Default = v;
@@ -1233,7 +1371,7 @@ internal sealed class SettingsMenu
             else r.DefaultText = Describe(v);
             r.HasDefault = Accessor(node.GetType())?.set != null;
         }
-        foreach (var c in s.Children) SnapshotDefaults(c, fresh);
+        foreach (var c in s.Children) SnapshotDefaults(m, c, fresh);
     }
 
     private void ResetAll(Section s, object owner)
@@ -1274,8 +1412,22 @@ internal sealed class SettingsMenu
             if (vp == null) return null;
             var o = Expression.Parameter(typeof(object), "o");
             var value = Expression.Variable(vp.PropertyType, "v");
-            Expression Channel(string name, int shift) =>
-                Expression.LeftShift(Expression.Convert(Expression.PropertyOrField(value, name), typeof(uint)), Expression.Constant(shift));
+            Expression Channel(string name, int shift)
+            {
+                var ch = Expression.PropertyOrField(value, name);
+                Expression b;
+                if (ch.Type == typeof(float) || ch.Type == typeof(double))
+                {
+                    // 0..1 channels: scale to a byte, rounded and clamped, so a float colour packs like a byte one
+                    var scaled = Expression.Add(Expression.Multiply(Expression.Convert(ch, typeof(double)), Expression.Constant(255.0)), Expression.Constant(0.5));
+                    var clamp = typeof(Math).GetMethod(nameof(Math.Clamp), new[] { typeof(double), typeof(double), typeof(double) })!;
+                    b = Expression.Convert(Expression.Call(clamp, scaled, Expression.Constant(0.0), Expression.Constant(255.0)), typeof(uint));
+                }
+                else if (ch.Type == typeof(byte) || ch.Type == typeof(int) || ch.Type == typeof(uint) || ch.Type == typeof(short) || ch.Type == typeof(ushort))
+                    b = Expression.And(Expression.Convert(ch, typeof(uint)), Expression.Constant(0xFFu));
+                else throw new NotSupportedException($"{vp.PropertyType.Name}.{name} is {ch.Type.Name}");
+                return Expression.LeftShift(b, Expression.Constant(shift));
+            }
             var packed = Expression.Or(Expression.Or(Channel("R", 24), Channel("G", 16)), Expression.Or(Channel("B", 8), Channel("A", 0)));
             var body = Expression.Block(new[] { value },
                 Expression.Assign(value, Expression.Property(Expression.Convert(o, typeof(ColorNode)), vp)),
