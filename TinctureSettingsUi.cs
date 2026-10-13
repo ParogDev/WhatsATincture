@@ -56,7 +56,7 @@ public class TinctureSettingsUi
         Dot(count > 0 ? Good : BadCol);
         ImGui.SameLine();
         ImGui.AlignTextToFramePadding();
-        ImGui.TextColored(Label, $"{count} Tincture{(count != 1 ? "s" : "")}");
+        Text(Label, $"{count} Tincture{(count != 1 ? "s" : "")}");
         ImGui.SameLine(0, 12);
         _menu.Badge(scenarioText);
         ImGui.SameLine(0, 6);
@@ -65,7 +65,7 @@ public class TinctureSettingsUi
         _menu.Badge("Max Active: " + _build.MaxActiveTinctures, Desc);
         ImGui.SameLine(0, 12);
         if (_menu.AccentButton("Rescan Flask Belt")) _rescan();
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Re-read the flask belt and passive tree now (also happens on every area change)");
+        if (ImGui.IsItemHovered()) Tooltip("Re-read the flask belt and passive tree now (also happens on every area change)");
         ImGui.Spacing();
     }
 
@@ -76,7 +76,7 @@ public class TinctureSettingsUi
         var s = _settings;
         if (s.Tinctures.Count == 0)
         {
-            ImGui.TextColored(Desc, "No tinctures detected. Equip tinctures and click Rescan.");
+            Text(Desc, "No tinctures detected. Equip tinctures and click Rescan.");
             return;
         }
         foreach (var (slot, config) in s.Tinctures.OrderBy(kv => kv.Key))
@@ -127,12 +127,12 @@ public class TinctureSettingsUi
                 if (_menu.Slider("##sl", ref v, 1, 100, "stacks")) set(v);
                 ImGui.SameLine();
                 if (ImGui.SmallButton("Reset##rst")) set(-1);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("Back to the global limit");
+                if (ImGui.IsItemHovered()) Tooltip("Back to the global limit");
             }
             else
             {
                 ImGui.AlignTextToFramePadding();
-                ImGui.TextColored(Accent, $"Global ({globalValue})");
+                Text(Accent, $"Global ({globalValue})");
                 ImGui.SameLine();
                 if (ImGui.SmallButton("Override##ovr")) set(globalValue);
             }
@@ -144,15 +144,20 @@ public class TinctureSettingsUi
     {
         ImGui.PushID(label);
         ImGui.AlignTextToFramePadding();
-        ImGui.TextColored(Label, label);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip(desc);
+        Text(Label, label);
+        if (ImGui.IsItemHovered()) Tooltip(desc);
         ImGui.SameLine(LabelW);
         ImGui.SetNextItemWidth(-1);
         control();
-        ImGui.TextColored(Desc, desc);
+        Text(Desc, desc);
         ImGui.Dummy(new Vector2(1, 2));
         ImGui.PopID();
     }
+
+    // text taken as-is (ImGui's Text* calls are printf-style: "100% uptime" would be mangled)
+    private static void Text(Vector4 color, string text) => SettingsMenu.Text(color, text);
+    private static void Dim(string text) => SettingsMenu.Dim(text);
+    private static void Tooltip(string text) => SettingsMenu.Tooltip(text);
 
     private static void Dot(Vector4 color)
     {
@@ -278,7 +283,7 @@ public class TinctureSettingsUi
 
     private static void Title(string text)
     {
-        ImGui.TextColored(Accent, text);
+        Text(Accent, text);
         ImGui.Spacing();
     }
 
@@ -287,7 +292,7 @@ public class TinctureSettingsUi
     private static void Lines(Vector4 color, params string[] lines)
     {
         ImGui.PushTextWrapPos(0f);
-        foreach (var line in lines) ImGui.TextColored(color, line);
+        foreach (var line in lines) Text(color, line);
         ImGui.PopTextWrapPos();
         ImGui.Spacing();
     }
@@ -297,8 +302,8 @@ public class TinctureSettingsUi
         Dot(allocated ? Good : optional ? Warn : BadCol);
         ImGui.SameLine();
         ImGui.BeginGroup();
-        ImGui.TextColored(Label, name);
-        ImGui.TextColored(Desc, desc);
+        Text(Label, name);
+        Text(Desc, desc);
         ImGui.EndGroup();
         ImGui.Dummy(new Vector2(1, 2));
     }
@@ -313,6 +318,6 @@ public class TinctureSettingsUi
         Dot(enough ? Good : BadCol);
         ImGui.SameLine();
         ImGui.AlignTextToFramePadding();
-        ImGui.TextColored(Label, status);
+        Text(Label, status);
     }
 }

@@ -169,7 +169,7 @@ internal sealed class SettingsMenu
     public void Draw(ISettings settings)
     {
         _clock.Restart();
-        if (settings == null) { ImGui.TextColored(Bad, "[SettingsMenu] Draw(null): the plugin passed no settings object"); return; }
+        if (settings == null) { Text(Bad, "[SettingsMenu] Draw(null): the plugin passed no settings object"); return; }
         if (_model == null || !ReferenceEquals(_modelFor, settings))
         {
             _model = Build(settings);
@@ -187,7 +187,7 @@ internal sealed class SettingsMenu
             {
                 if (_filter.Length > 0) DrawSearch(m, settings);
                 else if (m.Tabs.Count > 0) DrawTab(m.Tabs[Math.Clamp(_activeTab, 0, m.Tabs.Count - 1)], settings);
-                else ImGui.TextDisabled("No settings to draw: no [Submenu] properties and no supported nodes on " + settings.GetType().Name);
+                else Dim("No settings to draw: no [Submenu] properties and no supported nodes on " + settings.GetType().Name);
             }
             finally { ImGui.EndChild(); }
             DrawFooter(m);
@@ -226,7 +226,7 @@ internal sealed class SettingsMenu
                 var text = Fit(m.Tabs[i].Name, tabW - 10f);
                 var sz = ImGui.CalcTextSize(text);
                 dl.AddText((tMin + tMax) * 0.5f - sz * 0.5f, active ? U32(Accent) : hov ? U32(Accent, 0.8f) : Muted, text);
-                if (hov && text != m.Tabs[i].Name) ImGui.SetTooltip(m.Tabs[i].Name);
+                if (hov && text != m.Tabs[i].Name) Tooltip(m.Tabs[i].Name);
             }
         }
         ImGui.SetCursorScreenPos(new Vector2(origin.X + w - filterW, origin.Y + (tabH - ImGui.GetFrameHeight()) * 0.5f));
@@ -252,7 +252,7 @@ internal sealed class SettingsMenu
         foreach (var tab in m.Tabs)
         foreach (var s in tab.Sections)
             hits += DrawSearchSection(tab.Name, s, root);
-        if (hits == 0) ImGui.TextDisabled($"Nothing matches \"{_filter}\"");
+        if (hits == 0) Dim($"Nothing matches \"{_filter}\"");
     }
 
     private int DrawSearchSection(string crumbs, Section s, object parentOwner)
@@ -265,7 +265,7 @@ internal sealed class SettingsMenu
         if (hits > 0)
         {
             ImGui.Spacing();
-            ImGui.TextColored(Accent, here);
+            Text(Accent, here);
             ImGui.Separator();
             float labelW = LabelWidth(rows);
             ImGui.PushID(s.Path);
@@ -293,7 +293,7 @@ internal sealed class SettingsMenu
         var owner = s.Get(parentOwner);
         if (owner == null)
         {
-            ImGui.TextColored(Bad, $"{s.Title}: the settings property {s.Path} is null (the plugin should create it in Initialise)");
+            Text(Bad, $"{s.Title}: the settings property {s.Path} is null (the plugin should create it in Initialise)");
             return;
         }
         ImGui.PushID(s.Path);
@@ -319,7 +319,7 @@ internal sealed class SettingsMenu
                 open = ImGui.TreeNodeEx(s.Title + "###h", ImGuiTreeNodeFlags.Framed | ImGuiTreeNodeFlags.SpanFullWidth | ImGuiTreeNodeFlags.NoTreePushOnOpen | ImGuiTreeNodeFlags.AllowOverlap);
                 ImGui.PopStyleColor(4);
                 _open[s.Path] = open;
-                if (!string.IsNullOrEmpty(s.Tip) && ImGui.IsItemHovered()) ImGui.SetTooltip(s.Tip);
+                if (!string.IsNullOrEmpty(s.Tip) && ImGui.IsItemHovered()) Tooltip(s.Tip);
                 if (ImGui.BeginPopupContextItem("##cardctx"))
                 {
                     if (ImGui.MenuItem("Reset this section to defaults")) ResetAll(s, owner);
@@ -328,7 +328,7 @@ internal sealed class SettingsMenu
                 if (open && !string.IsNullOrEmpty(s.Tip))
                 {
                     ImGui.PushTextWrapPos(0f);
-                    ImGui.TextDisabled(s.Tip);
+                    Dim(s.Tip);
                     ImGui.PopTextWrapPos();
                     ImGui.Spacing();
                 }
@@ -392,7 +392,7 @@ internal sealed class SettingsMenu
         var node = r.Get(owner);
         if (node == null && r.Kind != Kind.Unsupported)
         {
-            ImGui.TextColored(Bad, $"{r.Label}: {r.Path} is null (the plugin should initialise it)");
+            Text(Bad, $"{r.Label}: {r.Path} is null (the plugin should initialise it)");
             return;
         }
         var style = ImGui.GetStyle();
@@ -400,7 +400,7 @@ internal sealed class SettingsMenu
         // label column
         bool changedFromDefault = r.HasDefault && node != null && !Equals(ValueOf(node), r.Default);
         ImGui.AlignTextToFramePadding();
-        ImGui.TextColored(r.ReadOnly ? style.Colors[(int)ImGuiCol.TextDisabled] : style.Colors[(int)ImGuiCol.Text], r.Label);
+        Text(r.ReadOnly ? style.Colors[(int)ImGuiCol.TextDisabled] : style.Colors[(int)ImGuiCol.Text], r.Label);
         bool labelHovered = ImGui.IsItemHovered();
         if (changedFromDefault)
         {
@@ -412,7 +412,7 @@ internal sealed class SettingsMenu
             ImGui.BeginTooltip();
             ImGui.PushTextWrapPos(360f);
             if (!string.IsNullOrEmpty(r.Tip)) ImGui.TextUnformatted(r.Tip);
-            if (changedFromDefault) ImGui.TextDisabled("default: " + Describe(r.Default) + "  (right-click to reset)");
+            if (changedFromDefault) Dim("default: " + Describe(r.Default) + "  (right-click to reset)");
             ImGui.PopTextWrapPos();
             ImGui.EndTooltip();
         }
@@ -425,7 +425,7 @@ internal sealed class SettingsMenu
         ImGui.SameLine(labelW);
         ImGui.SetNextItemWidth(-1);
         if (node != null) DrawControl(r, node);
-        else ImGui.TextDisabled("not drawn (" + TypeName(r.Type) + ")");
+        else Dim("not drawn (" + TypeName(r.Type) + ")");
         // description line
         if (!string.IsNullOrEmpty(r.Tip))
         {
@@ -452,16 +452,16 @@ internal sealed class SettingsMenu
                 if (PillToggle("##t", ref v, r.Path)) n.Value = v;
                 if (ImGui.BeginPopupContextItem("##hkctx"))
                 {
-                    ImGui.TextDisabled("Hotkey that flips this toggle");
+                    Dim("Hotkey that flips this toggle");
                     n.AttachedHotkey.DrawPickerButton($"{n.AttachedHotkey.Value}##hk");
                     ImGui.EndPopup();
                 }
-                else if (ImGui.IsItemHovered()) ImGui.SetTooltip(v ? "On (right-click: hotkey)" : "Off (right-click: hotkey)");
+                else if (ImGui.IsItemHovered()) Tooltip(v ? "On (right-click: hotkey)" : "Off (right-click: hotkey)");
                 if (n.AttachedHotkey.Value.Mode != HotkeyNodeV2.HotkeyNodeMode.None)
                 {
                     ImGui.SameLine();
                     SmallAccentButton(() => n.AttachedHotkey.DrawPickerButton($"[{n.AttachedHotkey.Value}]##hk2"));
-                    if (ImGui.IsItemHovered()) ImGui.SetTooltip("Hotkey that flips this toggle (click to change)");
+                    if (ImGui.IsItemHovered()) Tooltip("Hotkey that flips this toggle (click to change)");
                 }
                 break;
             }
@@ -518,7 +518,7 @@ internal sealed class SettingsMenu
                 }
                 else n.DrawPicker("##c");
                 ImGui.SameLine();
-                ImGui.TextDisabled(n.Hex ?? "");
+                Dim(n.Hex ?? "");
                 if (r.ReadOnly) { ImGui.SameLine(); ReadOnlyBadge(r); }
                 break;
             }
@@ -543,7 +543,7 @@ internal sealed class SettingsMenu
                 if (r.ReadOnly) { ValueText(n.Value.ToString()); ReadOnlyBadge(r); break; }
                 SmallAccentButton(() => n.DrawPickerButton($"[{n.Value}]##hk"));
                 ImGui.SameLine();
-                ImGui.TextDisabled("click, then press the new key");
+                Dim("click, then press the new key");
                 break;
             }
             case Kind.Hotkey:
@@ -554,7 +554,7 @@ internal sealed class SettingsMenu
                 SmallAccentButton(() => n.DrawPickerButton($"[{n.Value}]##hk"));
 #pragma warning restore CS0618
                 ImGui.SameLine();
-                ImGui.TextDisabled("click, then press the new key");
+                Dim("click, then press the new key");
                 break;
             }
             case Kind.Button:
@@ -567,11 +567,11 @@ internal sealed class SettingsMenu
             {
                 var n = (CustomNode)node;
                 if (n.DrawDelegate != null) Guarded(n.DrawDelegate, r.Path);
-                else ImGui.TextDisabled("CustomNode with no DrawDelegate");
+                else Dim("CustomNode with no DrawDelegate");
                 break;
             }
             default:
-                ImGui.TextDisabled("not drawn (" + TypeName(r.Type) + ")");
+                Dim("not drawn (" + TypeName(r.Type) + ")");
                 break;
         }
     }
@@ -597,7 +597,7 @@ internal sealed class SettingsMenu
             shown++;
             if (ImGui.Selectable((v ?? "") + "##" + shown, v == n.Value)) { n.Value = v; ImGui.CloseCurrentPopup(); }
         }
-        if (shown == 0 && !n.AllowCustomValues) ImGui.TextDisabled(values.Count == 0 ? "no values (the plugin fills this list)" : "no match");
+        if (shown == 0 && !n.AllowCustomValues) Dim(values.Count == 0 ? "no values (the plugin fills this list)" : "no match");
         if (n.AllowCustomValues && filter.Length > 0 && !values.Contains(filter))
         {
             if (ImGui.Selectable($"Use \"{filter}\"##custom") || enter) { n.Value = filter; ImGui.CloseCurrentPopup(); }
@@ -611,7 +611,7 @@ internal sealed class SettingsMenu
         var text = $"{m.RowCount} settings  -  drawn in {LastDrawMs:0.00} ms";
         if (m.DefaultsUnavailable != null) text += "  -  reset unavailable: " + m.DefaultsUnavailable;
         if (m.Problems.Count > 0) text += $"  -  {m.Problems.Count} not drawn";
-        ImGui.TextDisabled(text);
+        Dim(text);
         if (m.Problems.Count > 0 && ImGui.IsItemHovered())
         {
             ImGui.BeginTooltip();
@@ -622,12 +622,34 @@ internal sealed class SettingsMenu
 
     // ---- widgets (also for custom blocks, so they match) ----
 
+    /// <summary>Coloured text taken as-is: ImGui's Text/TextColored/TextDisabled are printf-style and eat a % in a
+    /// label such as "Min Resource %".</summary>
+    public static void Text(Vector4 color, string? text)
+    {
+        ImGui.PushStyleColor(ImGuiCol.Text, color);
+        ImGui.TextUnformatted(text ?? "");
+        ImGui.PopStyleColor();
+    }
+
+    /// <summary>Dim text taken as-is.</summary>
+    public static void Dim(string? text) => Text(ImGui.GetStyle().Colors[(int)ImGuiCol.TextDisabled], text);
+
+    /// <summary>Tooltip with the text taken as-is, wrapped. Call it when the item is hovered.</summary>
+    public static void Tooltip(string? text)
+    {
+        ImGui.BeginTooltip();
+        ImGui.PushTextWrapPos(360f);
+        ImGui.TextUnformatted(text ?? "");
+        ImGui.PopTextWrapPos();
+        ImGui.EndTooltip();
+    }
+
     /// <summary>Accent title with a rule under it.</summary>
     public void SectionHeader(string title, string? tip = null)
     {
         ImGui.Spacing();
-        ImGui.TextColored(Accent, title);
-        if (!string.IsNullOrEmpty(tip) && ImGui.IsItemHovered()) ImGui.SetTooltip(tip);
+        Text(Accent, title);
+        if (!string.IsNullOrEmpty(tip) && ImGui.IsItemHovered()) Tooltip(tip);
         var p = ImGui.GetCursorScreenPos();
         ImGui.GetWindowDrawList().AddLine(p, new Vector2(p.X + ImGui.GetContentRegionAvail().X, p.Y), U32(Accent, 0.2f));
         ImGui.Dummy(new Vector2(1, 4));
@@ -707,7 +729,7 @@ internal sealed class SettingsMenu
         dl.AddRectFilled(org, org + size, U32(c, 0.18f), size.Y * 0.5f);
         dl.AddRect(org, org + size, U32(c, 0.6f), size.Y * 0.5f);
         dl.AddText(org + pad, U32(c), text);
-        if (tooltip != null && ImGui.IsItemHovered()) ImGui.SetTooltip(tooltip);
+        if (tooltip != null && ImGui.IsItemHovered()) Tooltip(tooltip);
     }
 
     private void ReadOnlyBadge(Row r)
@@ -719,7 +741,7 @@ internal sealed class SettingsMenu
     private void ValueText(string text)
     {
         ImGui.AlignTextToFramePadding();
-        ImGui.TextColored(Accent, text);
+        Text(Accent, text);
     }
 
     private void SmallAccentButton(Action drawButton)
@@ -787,7 +809,7 @@ internal sealed class SettingsMenu
         try { a(); }
         catch (Exception ex)
         {
-            ImGui.TextColored(Bad, $"{where}: {ex.GetType().Name}: {ex.Message}");
+            Text(Bad, $"{where}: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
