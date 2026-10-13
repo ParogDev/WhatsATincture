@@ -80,21 +80,59 @@ internal sealed class SettingsMenu
     private Action? _banner;
 
     /// <summary>A tab of your own (a Debug tree, a guide). If a generated tab has that name, the body draws on it:
-    /// after its cards, or before them with <paramref name="first"/>.</summary>
+    /// after its cards, or before them with <paramref name="first"/>.
+    /// One entry per tab name: calling it again with the same name replaces the body (no duplicate, no rebuild).</summary>
     public SettingsMenu Tab(string name, Action body, bool first = false)
     {
-        _customTabs.Add((name, body, first));
-        _model = null;
+        int i = _customTabs.FindIndex(t => string.Equals(t.name, name, StringComparison.OrdinalIgnoreCase));
+        if (i < 0)
+        {
+            _customTabs.Add((name, body, first));
+            _model = null;   // a new tab (or new content on a generated one): the tab list changes
+            return this;
+        }
+        var old = _customTabs[i];
+        if (old.first == first && old.body == body) return this;   // nothing changed
+        _customTabs[i] = (old.name, body, first);
+        if (_model == null) return this;
+        var tab = _model.Tabs.FirstOrDefault(t => string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase));
+        if (tab == null || old.first != first) { _model = null; return this; }
+        // same place, new body: swap it in the built model
+        var list = first ? tab.Before : tab.After;
+        int j = list.IndexOf(old.body);
+        if (j >= 0) list[j] = body; else _model = null;
         return this;
     }
 
     /// <summary>Draw this property yourself, in its place: <paramref name="path"/> is the property name, dotted when
-    /// nested ("Hud.Bars"). Works for [IgnoreMenu] properties and types the renderer can't draw (a Dictionary).</summary>
+    /// nested ("Hud.Bars"). Works for [IgnoreMenu] properties and types the renderer can't draw (a Dictionary).
+    /// Calling it again for the same path replaces the drawing without rebuilding the panel.</summary>
     public SettingsMenu Custom(string path, Action draw)
     {
+        if (_custom.TryGetValue(path, out var old))
+        {
+            if (old == draw) return this;   // nothing changed
+            _custom[path] = draw;
+            // the row is already a Custom row: swap the delegate in place
+            if (_model != null && !ReplaceCustom(_model, path, draw)) _model = null;
+            return this;
+        }
         _custom[path] = draw;
-        _model = null;
+        _model = null;   // a new custom path changes how the model is built
         return this;
+    }
+
+    private static bool ReplaceCustom(Model m, string path, Action draw)
+    {
+        bool found = false;
+        void Walk(Section s)
+        {
+            foreach (var r in s.Rows.SelectMany(Flatten))
+                if (r.Kind == Kind.Custom && r.Path == path) { r.Custom = draw; found = true; }
+            foreach (var c in s.Children) Walk(c);
+        }
+        foreach (var t in m.Tabs) foreach (var s in t.Sections) Walk(s);
+        return found;
     }
 
     /// <summary>A strip above the tab bar (a status line, a rescan button).</summary>
@@ -123,10 +161,12 @@ internal sealed class SettingsMenu
         public Func<object, bool>? Visible;
         public Action? Custom;
         public object? Default;
-        public string? DefaultHex;   // ColorNode: compared by Hex, the one colour member both games share
+        public uint? DefaultColor;   // ColorNode: packed RGBA of the default, compared without boxing
+        public string DefaultText = "";   // Describe(Default), built once for the tooltip and the reset item
         public bool HasDefault;
         public readonly List<Row> Children = new();
         public bool Attached;      // placed under a parent row via parentIndex
+        public Row? ParentRow;     // the row it hangs under: search honours that row's [ConditionalDisplay] too
     }
 
     private sealed class Section
@@ -143,6 +183,7 @@ internal sealed class SettingsMenu
         public List<Row> VisibleRows = new();   // top-level rows that draw (children hang off them)
         public List<Row> FlatRows = new();      // every drawable row including attached children: label width, search
 
+        /// <summary>Called once per section, from FreezeAll at the end of Build.</summary>
         public void Freeze()
         {
             VisibleRows = Rows.Where(r => !r.Hidden).ToList();
@@ -185,6 +226,7 @@ internal sealed class SettingsMenu
         {
             _model = Build(settings);
             _modelFor = settings;
+            _footerAt = double.NaN;   // the footer names this model's counts, not the last one's
         }
         var m = _model;
         ImGui.PushID("settings-menu");
@@ -278,9 +320,10 @@ internal sealed class SettingsMenu
         if (owner == null) return 0;
         var here = string.IsNullOrEmpty(s.Title) || s.Headerless ? crumbs : crumbs + "  >  " + s.Title;
         _searchHits.Clear();
-        // rows hidden by [ConditionalDisplay] are not hits: they would draw nothing under a header
+        // a hit is a row the tab would draw: hidden by [ConditionalDisplay] on itself or on any row it hangs under
+        // means no hit, so the count is what is on screen and "Nothing matches" shows when nothing is
         foreach (var r in s.FlatRows)
-            if (r.Kind != Kind.Empty && Matches(r) && (r.Visible == null || r.Visible(owner))) _searchHits.Add(r);
+            if (r.Kind != Kind.Empty && Matches(r) && ShownUnder(r, owner)) _searchHits.Add(r);
         int hits = _searchHits.Count;
         if (hits > 0)
         {
@@ -298,6 +341,14 @@ internal sealed class SettingsMenu
         }
         foreach (var c in s.Children) hits += DrawSearchSection(here, c, owner);
         return hits;
+    }
+
+    private static bool ShownUnder(Row r, object owner)
+    {
+        // the chain is acyclic (AttachByIndex never attaches into a loop) and at most Rows.Count long
+        for (var x = r; x != null; x = x.ParentRow)
+            if (x.Hidden || (x.Visible != null && !x.Visible(owner))) return false;
+        return true;
     }
 
     private static IEnumerable<Row> Flatten(Row r)
@@ -427,7 +478,8 @@ internal sealed class SettingsMenu
             case Kind.RangeVec2: return ((RangeNode<Vector2>)node).Value != (Vector2)r.Default;
             case Kind.Text: return !string.Equals(((TextNode)node).Value, (string)r.Default, StringComparison.Ordinal);
             case Kind.List: return !string.Equals(((ListNode)node).Value, (string)r.Default, StringComparison.Ordinal);
-            case Kind.Color: return !string.Equals(((ColorNode)node).Hex, r.DefaultHex, StringComparison.Ordinal);
+            // packed RGBA, alpha included (ColorNode.Hex drops alpha and is null until the value is first set)
+            case Kind.Color: return r.DefaultColor is { } dc && PackColor != null && PackColor(node) != dc;
             default: return !Equals(ValueOf(node), r.Default);
         }
     }
@@ -456,13 +508,13 @@ internal sealed class SettingsMenu
             ImGui.BeginTooltip();
             ImGui.PushTextWrapPos(360f);
             if (!string.IsNullOrEmpty(r.Tip)) ImGui.TextUnformatted(r.Tip);
-            if (changedFromDefault) Dim("default: " + Describe(r.Default) + (r.ReadOnly ? "" : "  (right-click to reset)"));
+            if (changedFromDefault) Dim(r.ReadOnly ? "default: " + r.DefaultText : "default: " + r.DefaultText + "  (right-click to reset)");
             ImGui.PopTextWrapPos();
             ImGui.EndTooltip();
         }
         if (r.HasDefault && !r.ReadOnly && ImGui.BeginPopupContextItem("##ctx"))
         {
-            if (ImGui.MenuItem("Reset to default: " + Describe(r.Default)) && node != null) SetValue(node, r.Default);
+            if (ImGui.MenuItem("Reset to default: " + r.DefaultText) && node != null) SetValue(node, r.Default);
             ImGui.EndPopup();
         }
         // control column
@@ -650,14 +702,15 @@ internal sealed class SettingsMenu
     }
 
     private string _footer = "";
-    private double _footerAt = -1;
+    private double _footerAt = double.NaN;   // NaN: rebuild on the next frame (a new model)
 
     private void DrawFooter(Model m)
     {
         ImGui.Separator();
-        // the string is rebuilt four times a second, not per frame: the panel must not allocate while it idles
+        // the string is rebuilt four times a second, not per frame: the panel must not allocate while it idles.
+        // Abs: ImGui's clock restarts with a new context, so "now" can be behind the last rebuild
         double now = ImGui.GetTime();
-        if (now - _footerAt > 0.25)
+        if (double.IsNaN(_footerAt) || Math.Abs(now - _footerAt) > 0.25)
         {
             _footerAt = now;
             var text = $"{m.RowCount} settings  -  drawn in {LastDrawMs:0.00} ms";
@@ -720,9 +773,10 @@ internal sealed class SettingsMenu
         ImGui.SetCursorScreenPos(cur);
         ImGui.InvisibleButton(id, new Vector2(w, h));
         bool clicked = !disabled && ImGui.IsItemClicked();
-        if (clicked) value = !value;
-        // seeded at the current state, so a toggle that is already on doesn't slide in from off the first time
+        // seeded at the state before this frame's click, so a toggle that is already on doesn't slide in from off
+        // the first time, and a first-frame click still animates
         if (!_anim.TryGetValue(animKey, out float a)) a = value ? 1f : 0f;
+        if (clicked) value = !value;
         float dt = ImGui.GetIO().DeltaTime;
         a = Math.Clamp(a + ((value ? 1f : 0f) - a) * Math.Min(dt * 12f, 1f), 0f, 1f);
         _anim[animKey] = a;
@@ -922,6 +976,7 @@ internal sealed class SettingsMenu
             var t = TabNamed(name);
             if (first) t.Before.Add(body); else t.After.Add(body);
         }
+        foreach (var t in m.Tabs) foreach (var s in t.Sections) FreezeAll(s);
         m.RowCount = m.Tabs.Sum(t => t.Sections.Sum(CountRows));
         BuildDefaults(m, settings);
         return m;
@@ -1046,26 +1101,34 @@ internal sealed class SettingsMenu
                 m.Problems.Add($"{r.Path}: [Menu(parentIndex: {r.Parent})] names no row with index {r.Parent} in {where}: drawn unattached");
                 continue;
             }
-            // walk the parent's own chain: if it reaches r, attaching would make a cycle
-            // (a visited set also ends loops further up that never reach r: B under C, C under B)
+            // walk the parent's own chain: if it reaches r, attaching would make a cycle. The visited set ends the
+            // walk on a loop further up that r is not part of (A under B, B under C, C under B): A still attaches,
+            // since B and C are left flat when their own turn comes. At most Rows.Count steps either way.
             bool cycle = false;
             var seen = new HashSet<Row> { r };
             for (var up = parent; up != null; )
             {
-                if (!seen.Add(up)) { cycle = true; break; }
+                if (!seen.Add(up)) { cycle = up == r; break; }
                 if (up.Parent == -1 || !byIndex.TryGetValue(up.Parent, out var next)) break;
                 up = next;
             }
             if (cycle)
             {
-                m.Problems.Add($"{r.Path}: [Menu(parentIndex: {r.Parent})] leads into a parentIndex loop through {parent.Path} in {where}: drawn unattached");
+                m.Problems.Add($"{r.Path}: [Menu(parentIndex: {r.Parent})] closes a parentIndex loop through {parent.Path} in {where}: drawn unattached");
                 continue;
             }
             parent.Children.Add(r);
             r.Attached = true;
+            r.ParentRow = parent;
         }
         s.Rows.RemoveAll(r => r.Attached);
+    }
+
+    /// <summary>The one place sections freeze their draw lists: after every row is built and attached.</summary>
+    private static void FreezeAll(Section s)
+    {
         s.Freeze();
+        foreach (var c in s.Children) FreezeAll(c);
     }
 
     private static Func<object, object?> Getter(PropertyInfo p)
@@ -1161,7 +1224,13 @@ internal sealed class SettingsMenu
             var v = ValueOf(node);
             if (v == null) continue;
             r.Default = v;
-            r.DefaultHex = (node as ColorNode)?.Hex;
+            if (r.Kind == Kind.Color && PackColor != null)
+            {
+                uint packed = PackColor(node);
+                r.DefaultColor = packed;
+                r.DefaultText = $"#{packed:X8}";   // RRGGBBAA, alpha included
+            }
+            else r.DefaultText = Describe(v);
             r.HasDefault = Accessor(node.GetType())?.set != null;
         }
         foreach (var c in s.Children) SnapshotDefaults(c, fresh);
@@ -1189,18 +1258,35 @@ internal sealed class SettingsMenu
         double d => d.ToString("0.###"),
         bool b => b ? "on" : "off",
         Vector2 vec => $"{vec.X:0.##}, {vec.Y:0.##}",
-        _ => v.GetType().GetProperty("A") != null && v.GetType().GetProperty("R") != null ? ColorHex(v) : v.ToString() ?? "",
+        _ => v.ToString() ?? "",
     };
 
-    private static string ColorHex(object color)
+    /// <summary>ColorNode -> RRGGBBAA, compiled once. ColorNode.Value is SharpDX.Color (byte fields) in one HUD and a
+    /// different Color in the other, so R/G/B/A are read as property or field by name. Null when the type has no
+    /// such members (then colours never show "changed").</summary>
+    private static readonly Func<object, uint>? PackColor = BuildPackColor();
+
+    private static Func<object, uint>? BuildPackColor()
     {
         try
         {
-            var t = color.GetType();
-            byte C(string n) => Convert.ToByte(t.GetProperty(n)!.GetValue(color));
-            return $"#{C("R"):X2}{C("G"):X2}{C("B"):X2}{C("A"):X2}";
+            var vp = typeof(ColorNode).GetProperty("Value", BindingFlags.Public | BindingFlags.Instance);
+            if (vp == null) return null;
+            var o = Expression.Parameter(typeof(object), "o");
+            var value = Expression.Variable(vp.PropertyType, "v");
+            Expression Channel(string name, int shift) =>
+                Expression.LeftShift(Expression.Convert(Expression.PropertyOrField(value, name), typeof(uint)), Expression.Constant(shift));
+            var packed = Expression.Or(Expression.Or(Channel("R", 24), Channel("G", 16)), Expression.Or(Channel("B", 8), Channel("A", 0)));
+            var body = Expression.Block(new[] { value },
+                Expression.Assign(value, Expression.Property(Expression.Convert(o, typeof(ColorNode)), vp)),
+                packed);
+            return Expression.Lambda<Func<object, uint>>(body, o).Compile();
         }
-        catch { return color.ToString() ?? ""; }
+        catch (Exception ex)
+        {
+            DebugWindow.LogError($"[SettingsMenu] ColorNode.Value has no R/G/B/A to compare ({ex.GetType().Name}: {ex.Message}): colour rows never show changed-from-default");
+            return null;
+        }
     }
 
     /// <summary>The HUD's own label rule for a property without [Menu]: "DrawDistance" -> "Draw Distance".</summary>
