@@ -84,6 +84,7 @@ internal sealed class SettingsMenu
     public SettingsMenu Tab(string name, Action body, bool first = false)
     {
         _customTabs.Add((name, body, first));
+        _model = null;
         return this;
     }
 
@@ -122,6 +123,7 @@ internal sealed class SettingsMenu
         public Func<object, bool>? Visible;
         public Action? Custom;
         public object? Default;
+        public string? DefaultHex;   // ColorNode: compared by Hex, the one colour member both games share
         public bool HasDefault;
         public readonly List<Row> Children = new();
         public bool Attached;      // placed under a parent row via parentIndex
@@ -137,6 +139,15 @@ internal sealed class SettingsMenu
         public Action<object>? RenderMethod;
         public readonly List<Row> Rows = new();
         public readonly List<Section> Children = new();
+        // fixed at build time, so a frame allocates nothing walking them
+        public List<Row> VisibleRows = new();   // top-level rows that draw (children hang off them)
+        public List<Row> FlatRows = new();      // every drawable row including attached children: label width, search
+
+        public void Freeze()
+        {
+            VisibleRows = Rows.Where(r => !r.Hidden).ToList();
+            FlatRows = VisibleRows.SelectMany(Flatten).Where(r => !r.Hidden).ToList();
+        }
     }
 
     private sealed class TabModel
@@ -240,11 +251,16 @@ internal sealed class SettingsMenu
     private void DrawTab(TabModel tab, object root)
     {
         ImGui.PushID(tab.Name);
-        foreach (var b in tab.Before) Guarded(b, tab.Name);
-        foreach (var s in tab.Sections) DrawSection(s, root, 0);
-        foreach (var a in tab.After) Guarded(a, tab.Name);
-        ImGui.PopID();
+        try
+        {
+            foreach (var b in tab.Before) Guarded(b, tab.Name);
+            foreach (var s in tab.Sections) DrawSection(s, root, 0);
+            foreach (var a in tab.After) Guarded(a, tab.Name);
+        }
+        finally { ImGui.PopID(); }
     }
+
+    private readonly List<Row> _searchHits = new();
 
     private void DrawSearch(Model m, object root)
     {
@@ -257,20 +273,26 @@ internal sealed class SettingsMenu
 
     private int DrawSearchSection(string crumbs, Section s, object parentOwner)
     {
+        if (s.Visible != null && !s.Visible(parentOwner)) return 0;
         var owner = s.Get(parentOwner);
         if (owner == null) return 0;
         var here = string.IsNullOrEmpty(s.Title) || s.Headerless ? crumbs : crumbs + "  >  " + s.Title;
-        var rows = s.Rows.SelectMany(Flatten).Where(r => !r.Hidden && r.Kind != Kind.Empty && Matches(r)).ToList();
-        int hits = rows.Count;
+        _searchHits.Clear();
+        foreach (var r in s.FlatRows) if (r.Kind != Kind.Empty && Matches(r)) _searchHits.Add(r);
+        int hits = _searchHits.Count;
         if (hits > 0)
         {
             ImGui.Spacing();
             Text(Accent, here);
             ImGui.Separator();
-            float labelW = LabelWidth(rows);
+            float labelW = LabelWidth(_searchHits);
             ImGui.PushID(s.Path);
-            foreach (var r in rows) DrawRow(r, owner, labelW, 0);
-            ImGui.PopID();
+            try
+            {
+                // FlatRows already holds every attached child, so a hit draws itself only (no recursion)
+                foreach (var r in _searchHits) DrawRow(r, owner, labelW, 0, recurse: false);
+            }
+            finally { ImGui.PopID(); }
         }
         foreach (var c in s.Children) hits += DrawSearchSection(here, c, owner);
         return hits;
@@ -336,9 +358,8 @@ internal sealed class SettingsMenu
             if (open)
             {
                 if (s.RenderMethod != null) Guarded(() => s.RenderMethod(owner), s.Path);
-                var visibleRows = s.Rows.Where(r => !r.Hidden).ToList();
-                float labelW = LabelWidth(visibleRows.SelectMany(Flatten).ToList());
-                foreach (var r in visibleRows) DrawRow(r, owner, labelW, 0);
+                float labelW = LabelWidth(s.FlatRows);
+                foreach (var r in s.VisibleRows) DrawRow(r, owner, labelW, 0);
                 foreach (var c in s.Children) { ImGui.Spacing(); DrawSection(c, owner, depth + 1); }
             }
         }
@@ -362,7 +383,7 @@ internal sealed class SettingsMenu
         return Math.Clamp(w + 26f, 120f, Math.Max(120f, avail * 0.46f));
     }
 
-    private void DrawRow(Row r, object owner, float labelW, int depth)
+    private void DrawRow(Row r, object owner, float labelW, int depth, bool recurse = true)
     {
         if (r.Visible != null && !r.Visible(owner)) return;
         ImGui.PushID(r.Path);
@@ -381,10 +402,29 @@ internal sealed class SettingsMenu
                     DrawValueRow(r, owner, labelW - (depth > 0 ? 14f : 0f));
                     break;
             }
-            foreach (var c in r.Children) DrawRow(c, owner, labelW, depth + 1);
+            if (recurse) foreach (var c in r.Children) DrawRow(c, owner, labelW, depth + 1);
             if (depth > 0) ImGui.Unindent(14f);
         }
         finally { ImGui.PopID(); }
+    }
+
+    /// <summary>Typed for the common kinds so the per-frame check boxes nothing; the rest compare boxed.</summary>
+    private static bool ChangedFromDefault(Row r, object node)
+    {
+        if (!r.HasDefault || r.Default == null) return false;
+        switch (r.Kind)
+        {
+            case Kind.Toggle: return ((ToggleNode)node).Value != (bool)r.Default;
+            case Kind.RangeInt: return ((RangeNode<int>)node).Value != (int)r.Default;
+            case Kind.RangeFloat: return ((RangeNode<float>)node).Value != (float)r.Default;
+            case Kind.RangeLong: return ((RangeNode<long>)node).Value != (long)r.Default;
+            case Kind.RangeDouble: return ((RangeNode<double>)node).Value != (double)r.Default;
+            case Kind.RangeVec2: return ((RangeNode<Vector2>)node).Value != (Vector2)r.Default;
+            case Kind.Text: return !string.Equals(((TextNode)node).Value, (string)r.Default, StringComparison.Ordinal);
+            case Kind.List: return !string.Equals(((ListNode)node).Value, (string)r.Default, StringComparison.Ordinal);
+            case Kind.Color: return !string.Equals(((ColorNode)node).Hex, r.DefaultHex, StringComparison.Ordinal);
+            default: return !Equals(ValueOf(node), r.Default);
+        }
     }
 
     private void DrawValueRow(Row r, object owner, float labelW)
@@ -396,9 +436,8 @@ internal sealed class SettingsMenu
             return;
         }
         var style = ImGui.GetStyle();
-        var rowStart = ImGui.GetCursorScreenPos();
         // label column
-        bool changedFromDefault = r.HasDefault && node != null && !Equals(ValueOf(node), r.Default);
+        bool changedFromDefault = node != null && ChangedFromDefault(r, node);
         ImGui.AlignTextToFramePadding();
         Text(r.ReadOnly ? style.Colors[(int)ImGuiCol.TextDisabled] : style.Colors[(int)ImGuiCol.Text], r.Label);
         bool labelHovered = ImGui.IsItemHovered();
@@ -503,7 +542,7 @@ internal sealed class SettingsMenu
                 if (r.ReadOnly) { ValueText($"{n.Value.X:0.##}, {n.Value.Y:0.##}" + Suffix(r)); ReadOnlyBadge(r); break; }
                 var v = n.Value;
                 PushSliderStyle();
-                if (ImGui.SliderFloat2("##v", ref v, Math.Min(n.Min.X, n.Min.Y), Math.Max(n.Max.X, n.Max.Y), "%.1f" + Unit(r))) n.Value = v;
+                if (ImGui.SliderFloat2("##v", ref v, Math.Min(n.Min.X, n.Min.Y), Math.Max(n.Max.X, n.Max.Y), "%.1f" + Unit(r), ImGuiSliderFlags.AlwaysClamp)) n.Value = v;
                 PopSliderStyle();
                 break;
             }
@@ -605,13 +644,23 @@ internal sealed class SettingsMenu
         ImGui.EndCombo();
     }
 
+    private string _footer = "";
+    private double _footerAt = -1;
+
     private void DrawFooter(Model m)
     {
         ImGui.Separator();
-        var text = $"{m.RowCount} settings  -  drawn in {LastDrawMs:0.00} ms";
-        if (m.DefaultsUnavailable != null) text += "  -  reset unavailable: " + m.DefaultsUnavailable;
-        if (m.Problems.Count > 0) text += $"  -  {m.Problems.Count} not drawn";
-        Dim(text);
+        // the string is rebuilt four times a second, not per frame: the panel must not allocate while it idles
+        double now = ImGui.GetTime();
+        if (now - _footerAt > 0.25)
+        {
+            _footerAt = now;
+            var text = $"{m.RowCount} settings  -  drawn in {LastDrawMs:0.00} ms";
+            if (m.DefaultsUnavailable != null) text += "  -  reset unavailable: " + m.DefaultsUnavailable;
+            if (m.Problems.Count > 0) text += $"  -  {m.Problems.Count} not drawn";
+            _footer = text;
+        }
+        Dim(_footer);
         if (m.Problems.Count > 0 && ImGui.IsItemHovered())
         {
             ImGui.BeginTooltip();
@@ -667,7 +716,8 @@ internal sealed class SettingsMenu
         ImGui.InvisibleButton(id, new Vector2(w, h));
         bool clicked = !disabled && ImGui.IsItemClicked();
         if (clicked) value = !value;
-        _anim.TryGetValue(animKey, out float a);
+        // seeded at the current state, so a toggle that is already on doesn't slide in from off the first time
+        if (!_anim.TryGetValue(animKey, out float a)) a = value ? 1f : 0f;
         float dt = ImGui.GetIO().DeltaTime;
         a = Math.Clamp(a + ((value ? 1f : 0f) - a) * Math.Min(dt * 12f, 1f), 0f, 1f);
         _anim[animKey] = a;
@@ -686,7 +736,8 @@ internal sealed class SettingsMenu
     public bool Slider(string id, ref int value, int min, int max, string? unit = null)
     {
         PushSliderStyle();
-        bool c = ImGui.SliderInt(id, ref value, min, max, "%d" + UnitFmt(unit));
+        // AlwaysClamp: a Ctrl+click typed value stays inside [min, max] like a dragged one
+        bool c = ImGui.SliderInt(id, ref value, min, max, "%d" + UnitFmt(unit), ImGuiSliderFlags.AlwaysClamp);
         PopSliderStyle();
         return c;
     }
@@ -695,7 +746,7 @@ internal sealed class SettingsMenu
     public bool Slider(string id, ref float value, float min, float max, string? unit = null)
     {
         PushSliderStyle();
-        bool c = ImGui.SliderFloat(id, ref value, min, max, "%.2f" + UnitFmt(unit));
+        bool c = ImGui.SliderFloat(id, ref value, min, max, "%.2f" + UnitFmt(unit), ImGuiSliderFlags.AlwaysClamp);
         PopSliderStyle();
         return c;
     }
@@ -973,23 +1024,35 @@ internal sealed class SettingsMenu
         return Kind.Unsupported;
     }
 
-    /// <summary>[Menu(parentIndex: N)] rows move under the row whose [Menu(index: N)] matches, inside this section.</summary>
+    /// <summary>[Menu(parentIndex: N)] rows move under the row whose [Menu(index: N)] matches, inside this section.
+    /// A parent chain that loops back (A under B, B under A) is named and left flat: nothing disappears.</summary>
     private static void AttachByIndex(Model m, Section s)
     {
         var byIndex = new Dictionary<int, Row>();
         foreach (var r in s.Rows) if (r.Index != -1 && !byIndex.ContainsKey(r.Index)) byIndex[r.Index] = r;
+        var where = s.Path == "" ? "the root" : s.Path;
         foreach (var r in s.Rows.ToList())
         {
             if (r.Parent == -1) continue;
             if (!byIndex.TryGetValue(r.Parent, out var parent) || parent == r)
             {
-                m.Problems.Add($"{r.Path}: [Menu(parentIndex: {r.Parent})] names no row with index {r.Parent} in {(s.Path == "" ? "the root" : s.Path)}: drawn unattached");
+                m.Problems.Add($"{r.Path}: [Menu(parentIndex: {r.Parent})] names no row with index {r.Parent} in {where}: drawn unattached");
+                continue;
+            }
+            // walk the parent's own chain: if it reaches r, attaching would make a cycle
+            bool cycle = false;
+            for (var up = parent; up != null && up.Parent != -1 && byIndex.TryGetValue(up.Parent, out var next); up = next)
+                if (next == r || next == up) { cycle = true; break; }
+            if (cycle)
+            {
+                m.Problems.Add($"{r.Path}: [Menu(parentIndex: {r.Parent})] and {parent.Path} point at each other in {where}: drawn unattached");
                 continue;
             }
             parent.Children.Add(r);
             r.Attached = true;
         }
         s.Rows.RemoveAll(r => r.Attached);
+        s.Freeze();
     }
 
     private static Func<object, object?> Getter(PropertyInfo p)
@@ -1085,6 +1148,7 @@ internal sealed class SettingsMenu
             var v = ValueOf(node);
             if (v == null) continue;
             r.Default = v;
+            r.DefaultHex = (node as ColorNode)?.Hex;
             r.HasDefault = Accessor(node.GetType())?.set != null;
         }
         foreach (var c in s.Children) SnapshotDefaults(c, fresh);
