@@ -14,6 +14,12 @@ namespace WhatsATincture;
 
 public class WhatsATincture : BaseSettingsPlugin<WhatsATinctureSettings>
 {
+    public override void OnClose()
+    {
+        HudLog.Flush();
+        base.OnClose();
+    }
+
     private readonly Dictionary<int, TinctureRuntimeState> _runtime = new();
     private readonly Dictionary<int, ServerInventory.InventSlotItem> _slotItems = new();
 
@@ -134,7 +140,7 @@ public class WhatsATincture : BaseSettingsPlugin<WhatsATinctureSettings>
         }
         catch (Exception ex)
         {
-            LogError($"CacheSlotItems: {ex.Message}");
+            HudLog.Fault($"CacheSlotItems: {ex.GetType().Name}: {ex.Message}", "CacheSlotItems");
         }
     }
 
@@ -177,7 +183,7 @@ public class WhatsATincture : BaseSettingsPlugin<WhatsATinctureSettings>
         }
         catch (Exception ex)
         {
-            LogError($"Tick: {ex.Message}");
+            HudLog.Fault($"Tick: {ex.GetType().Name}: {ex.Message}", "Tick");
         }
 
         return null;
@@ -518,7 +524,7 @@ public class WhatsATincture : BaseSettingsPlugin<WhatsATinctureSettings>
         }
         catch (Exception ex)
         {
-            LogError($"ScanFlaskBelt: {ex.Message}");
+            HudLog.Fault($"ScanFlaskBelt: {ex.GetType().Name}: {ex.Message}", "ScanFlaskBelt");
         }
         return result;
     }
@@ -573,7 +579,7 @@ public class WhatsATincture : BaseSettingsPlugin<WhatsATinctureSettings>
         }
         catch (Exception ex)
         {
-            LogError($"ScanPassiveTree: {ex.Message}");
+            HudLog.Fault($"ScanPassiveTree: {ex.GetType().Name}: {ex.Message}", "ScanPassiveTree");
         }
         return result;
     }
