@@ -190,7 +190,7 @@ internal sealed class SettingsMenu
         ImGui.PushID("settings-menu");
         try
         {
-            _banner?.Invoke();
+            if (_banner != null) Guarded(_banner, "Banner");
             DrawTabBar(m);
             var footerH = ImGui.GetTextLineHeightWithSpacing() + 4f;
             ImGui.BeginChild("##content", new Vector2(0, -footerH), ImGuiChildFlags.None, ImGuiWindowFlags.None);
@@ -278,7 +278,9 @@ internal sealed class SettingsMenu
         if (owner == null) return 0;
         var here = string.IsNullOrEmpty(s.Title) || s.Headerless ? crumbs : crumbs + "  >  " + s.Title;
         _searchHits.Clear();
-        foreach (var r in s.FlatRows) if (r.Kind != Kind.Empty && Matches(r)) _searchHits.Add(r);
+        // rows hidden by [ConditionalDisplay] are not hits: they would draw nothing under a header
+        foreach (var r in s.FlatRows)
+            if (r.Kind != Kind.Empty && Matches(r) && (r.Visible == null || r.Visible(owner))) _searchHits.Add(r);
         int hits = _searchHits.Count;
         if (hits > 0)
         {
@@ -387,9 +389,9 @@ internal sealed class SettingsMenu
     {
         if (r.Visible != null && !r.Visible(owner)) return;
         ImGui.PushID(r.Path);
+        if (depth > 0) ImGui.Indent(14f);
         try
         {
-            if (depth > 0) ImGui.Indent(14f);
             switch (r.Kind)
             {
                 case Kind.Empty:
@@ -403,9 +405,12 @@ internal sealed class SettingsMenu
                     break;
             }
             if (recurse) foreach (var c in r.Children) DrawRow(c, owner, labelW, depth + 1);
-            if (depth > 0) ImGui.Unindent(14f);
         }
-        finally { ImGui.PopID(); }
+        finally
+        {
+            if (depth > 0) ImGui.Unindent(14f);
+            ImGui.PopID();
+        }
     }
 
     /// <summary>Typed for the common kinds so the per-frame check boxes nothing; the rest compare boxed.</summary>
@@ -451,7 +456,7 @@ internal sealed class SettingsMenu
             ImGui.BeginTooltip();
             ImGui.PushTextWrapPos(360f);
             if (!string.IsNullOrEmpty(r.Tip)) ImGui.TextUnformatted(r.Tip);
-            if (changedFromDefault) Dim("default: " + Describe(r.Default) + "  (right-click to reset)");
+            if (changedFromDefault) Dim("default: " + Describe(r.Default) + (r.ReadOnly ? "" : "  (right-click to reset)"));
             ImGui.PopTextWrapPos();
             ImGui.EndTooltip();
         }
@@ -852,9 +857,11 @@ internal sealed class SettingsMenu
             var t = text[..n] + "..";
             if (ImGui.CalcTextSize(t).X <= maxW) return t;
         }
-        return text[..1];
+        return text.Length > 0 ? text[..1] : text;
     }
 
+    /// <summary>Runs a plugin callback; a throw is shown in place of it. The callback must keep its own
+    /// Push*/Pop* balanced (try/finally): ImGui's style and ID stacks can't be unwound from here.</summary>
     private static void Guarded(Action a, string where)
     {
         try { a(); }
@@ -1040,12 +1047,18 @@ internal sealed class SettingsMenu
                 continue;
             }
             // walk the parent's own chain: if it reaches r, attaching would make a cycle
+            // (a visited set also ends loops further up that never reach r: B under C, C under B)
             bool cycle = false;
-            for (var up = parent; up != null && up.Parent != -1 && byIndex.TryGetValue(up.Parent, out var next); up = next)
-                if (next == r || next == up) { cycle = true; break; }
+            var seen = new HashSet<Row> { r };
+            for (var up = parent; up != null; )
+            {
+                if (!seen.Add(up)) { cycle = true; break; }
+                if (up.Parent == -1 || !byIndex.TryGetValue(up.Parent, out var next)) break;
+                up = next;
+            }
             if (cycle)
             {
-                m.Problems.Add($"{r.Path}: [Menu(parentIndex: {r.Parent})] and {parent.Path} point at each other in {where}: drawn unattached");
+                m.Problems.Add($"{r.Path}: [Menu(parentIndex: {r.Parent})] leads into a parentIndex loop through {parent.Path} in {where}: drawn unattached");
                 continue;
             }
             parent.Children.Add(r);
